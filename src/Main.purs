@@ -13,21 +13,23 @@ import Reactor.Internal.Helpers (withJust)
 import Reactor.Reaction (Reaction)
 
 main :: Effect Unit
-main = runReactor reactor { title: "Moving Dot", width: 20, height: 20 }
+main = runReactor reactor { title: "Boberman", width: 20, height: 20 }
 
-type World = { player :: Coordinates, cursor :: Maybe Coordinates }
+type World = { player :: Coordinates, grid :: ... }
 
 reactor :: Reactor World
 reactor = { initial, draw, handleEvent, isPaused: const true }
 
+wall = ...
+
+generateWall = ...
+
 initial :: World
-initial = { player: { x: 0, y: 0 }, cursor: Nothing }
+initial = { player: { x: 0, y: 0 } }
 
 draw :: World -> Drawing
-draw { cursor, player } = do
+draw { player } = do
   fill Color.blue400 $ tile player
-  withJust cursor $ \position ->
-    fill Color.gray200 $ tile position
 
 handleEvent :: Event -> Reaction World
 handleEvent event = do
@@ -37,8 +39,6 @@ handleEvent event = do
     bound { x, y } = { x: clip x width, y: clip y height }
   { player: { x, y } } <- getW
   case event of
-    Mouse { position } -> updateW_ { cursor: Just position }
-
     KeyPress { key: "ArrowLeft" } -> updateW_ { player: bound { x: x - 1, y } }
     KeyPress { key: "ArrowRight" } -> updateW_ { player: bound { x: x + 1, y } }
     KeyPress { key: "ArrowDown" } -> updateW_ { player: bound { x, y: y + 1 } }
