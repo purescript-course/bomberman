@@ -7,14 +7,10 @@ import Data.Grid as Grid
 import Data.List (List(..), (:))
 import Data.List as List
 import Data.Maybe (Maybe(..))
-import Data.Traversable (class Traversable, for, for_)
-import Debug (spy, traceM)
+import Data.Traversable (for_)
 import Effect (Effect)
-import Effect.Class (liftEffect)
-import Effect.Console (log)
 import Effect.Random (randomInt)
-import Effect.Unsafe (unsafePerformEffect)
-import Reactor (Reactor, dimensions, executeDefaultBehavior, getW, modifyW_, runReactor, updateW, updateW_)
+import Reactor (Reactor, executeDefaultBehavior, getW, runReactor, updateW_)
 import Reactor.Events (Event(..))
 import Reactor.Graphics.Colors as Color
 import Reactor.Graphics.Drawing (Drawing, drawGrid, fill, tile)
@@ -131,7 +127,6 @@ updateBombTimes = do
     { bombs: notExplodedBombs
     , player: player { bombsRemaining = bombsRemaining + explodedCount }
     }
-
   where
   -- Only update the timeRemaining field and leave the rest as it was
   tickBomb (bomb@{ timeRemaining }) = bomb { timeRemaining = timeRemaining - 1 }
@@ -140,23 +135,24 @@ updateBombTimes = do
 placeBomb :: Reaction World
 placeBomb = do
   { player: player@{ location, bombsRemaining }, bombs } <- getW
-  when (bombsRemaining > 0 && not (bombAlreadyAt bombs location)) $ do
+  when (bombsRemaining > 0 && not (isBomb bombs location)) $ do
     let newBomb = { location, timeRemaining: bombLifespan }
     updateW_
       { bombs: (newBomb : bombs)
       , player: player { bombsRemaining = bombsRemaining - 1 }
       }
-  where
-  bombAlreadyAt bombs loc = loc `List.elem` map (\b -> b.location) bombs
 
 movePlayer :: { x :: Int, y :: Int } -> Reaction World
 movePlayer { x: xd, y: yd } = do
   -- Match the patter {x, y} on player's location
   -- And also store the whole player in a variable by using player: player@(...)
-  { player: player@({ location: { x, y } }), board } <- getW
+  { player: player@({ location: { x, y } }), board, bombs } <- getW
   let newPlayerPosition = { x: x + xd, y: y + yd }
-  when (isEmpty newPlayerPosition board) $
+  when (isEmpty newPlayerPosition board && not (isBomb bombs newPlayerPosition)) $
     -- Update location in player by using: player { location = ... }
     updateW_ { player: player { location = newPlayerPosition } }
   where
   isEmpty position board = Grid.index board position == Just Empty
+
+isBomb :: List Bomb -> Coordinates -> Boolean
+isBomb bombs loc = loc `List.elem` map (\b -> b.location) bombs
