@@ -24,7 +24,7 @@ height :: Int
 height = 12
 
 bombLifespan :: Int
-bombLifespan = 8
+bombLifespan = 3 * 60
 
 playerBombLimit :: Int
 playerBombLimit = 2
@@ -52,7 +52,7 @@ type World =
 createReactor :: Effect (Reactor World)
 createReactor = do
   initial <- createInitialWorld
-  pure { initial, draw, handleEvent, isPaused: const true }
+  pure { initial, draw, handleEvent, isPaused: const false }
 
 shouldPlaceCrate :: Effect Boolean
 shouldPlaceCrate = (_ == 1) <$> (randomInt 1 3)
@@ -99,20 +99,20 @@ draw { player, board, bombs } = do
   drawTile Wall = Just Color.gray700
   drawTile Crate = Just Color.yellow500
 
-  bombColor time = if time == 1 then Color.red600 else Color.red500
+  bombColor time = if time < bombLifespan / 4 then Color.red800 else Color.red500
   playerColor loc =
     if List.elem loc $ map (\b -> b.location) bombs then Color.blue500
     else Color.blue400
 
 handleEvent :: Event -> Reaction World
 handleEvent event = do
-  updateBombTimes
   case event of
     KeyPress { key: "ArrowLeft" } -> movePlayer { x: -1, y: 0 }
     KeyPress { key: "ArrowRight" } -> movePlayer { x: 1, y: 0 }
     KeyPress { key: "ArrowDown" } -> movePlayer { x: 0, y: 1 }
     KeyPress { key: "ArrowUp" } -> movePlayer { x: 0, y: -1 }
     KeyPress { key: " " } -> placeBomb
+    Tick _ -> updateBombTimes
     _ -> executeDefaultBehavior
 
 updateBombTimes :: Reaction World
