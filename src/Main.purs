@@ -2,9 +2,10 @@ module Main where
 
 import Prelude
 
-import Data.Grid (Grid, Coordinates)
+import Data.Array (fromFoldable)
+import Data.Grid (Coordinates, Grid(..))
 import Data.Grid as Grid
-import Data.List (List(..), (:))
+import Data.List (List(..), (:), (..))
 import Data.List as List
 import Data.Maybe (Maybe(..))
 import Data.Traversable (for_)
@@ -29,7 +30,9 @@ playerBombLimit :: Int
 playerBombLimit = 2
 
 main :: Effect Unit
-main = runReactor reactor { title: "Bomberman", width, height }
+main = do
+  reactor <- createReactor
+  runReactor reactor { title: "Bomberman", width, height }
 
 data Tile
   = Wall
@@ -46,32 +49,28 @@ type World =
   , bombs :: List Bomb
   }
 
-reactor :: Reactor World
-reactor = { initial, draw, handleEvent, isPaused: const true }
+createReactor :: Effect (Reactor World)
+createReactor = do
+  initial <- createInitialWorld
+  pure { initial, draw, handleEvent, isPaused: const true }
 
-isBox :: Coordinates -> Effect Boolean
-isBox { x, y } =
-  (randomInt 1 3) >>= \prob ->
-    if prob == 1 then
-      pure true
-    else
-      pure false
+shouldPlaceCrate :: Effect Boolean
+shouldPlaceCrate = (_ == 1) <$> (randomInt 1 3)
 
-isBox' :: Coordinates -> Effect Boolean
-isBox' { x, y } = (_ == 1) <$> (randomInt 1 3)
-
-initial :: World
-initial = { player, board, bombs: Nil }
+createInitialWorld :: Effect World
+createInitialWorld = do
+  board <- Grid.constructM width height constructor
+  pure { player, board, bombs: Nil }
   where
   player =
     { location: { x: width / 2, y: height / 2 }
     , bombsRemaining: playerBombLimit
     }
-  board =
-    Grid.construct
-      width
-      height
-      (\point -> if isWall point then Wall else Empty)
+  constructor point
+    | isWall point = pure Wall
+    | otherwise = do
+        isCrate <- shouldPlaceCrate
+        if isCrate then pure Crate else pure Empty
 
 isWall :: Coordinates -> Boolean
 isWall { x, y } =
@@ -98,9 +97,9 @@ draw { player, board, bombs } = do
   where
   drawTile Empty = Just Color.gray300
   drawTile Wall = Just Color.gray700
-  drawTile Crate = Just Color.yellow900
+  drawTile Crate = Just Color.yellow500
 
-  bombColor time = if time == 1 then Color.red500 else Color.yellow500
+  bombColor time = if time == 1 then Color.red600 else Color.red500
   playerColor loc =
     if List.elem loc $ map (\b -> b.location) bombs then Color.blue500
     else Color.blue400
