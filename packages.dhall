@@ -33,5 +33,5 @@ in  upstream
       , "web-uievents"
       ]
     , repo = "https://github.com/Eugleo/purescript-grid-reactors.git"
-    , version = "f6fa587e5d6b0ca9b1a4179831e08789b18998ac"
+    , version = "14152b2c94fe0df8a1030864c07c5a6ccdd05f34"
     }

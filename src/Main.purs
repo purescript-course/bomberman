@@ -24,7 +24,7 @@ height :: Int
 height = 12
 
 bombLifespan :: Int
-bombLifespan = 3 * 60
+bombLifespan = 5 * 60
 
 playerBombLimit :: Int
 playerBombLimit = 2
@@ -32,7 +32,7 @@ playerBombLimit = 2
 main :: Effect Unit
 main = do
   reactor <- createReactor
-  runReactor reactor { title: "Bomberman", width, height }
+  runReactor reactor { title: "Bomberman", width, height, widgets: [] }
 
 data Tile
   = Wall
@@ -107,11 +107,16 @@ draw { player, board, bombs } = do
 handleEvent :: Event -> Reaction World
 handleEvent event = do
   case event of
-    KeyPress { key: "ArrowLeft" } -> movePlayer { x: -1, y: 0 }
-    KeyPress { key: "ArrowRight" } -> movePlayer { x: 1, y: 0 }
-    KeyPress { key: "ArrowDown" } -> movePlayer { x: 0, y: 1 }
-    KeyPress { key: "ArrowUp" } -> movePlayer { x: 0, y: -1 }
-    KeyPress { key: " " } -> placeBomb
+    KeyPress { key: "ArrowLeft" } -> do
+      movePlayer { x: -1, y: 0 }
+    KeyPress { key: "ArrowRight" } -> do
+      movePlayer { x: 1, y: 0 }
+    KeyPress { key: "ArrowDown" } -> do
+      movePlayer { x: 0, y: 1 }
+    KeyPress { key: "ArrowUp" } -> do
+      movePlayer { x: 0, y: -1 }
+    KeyPress { key: " " } -> do
+      placeBomb
     Tick _ -> updateBombTimes
     _ -> executeDefaultBehavior
 
