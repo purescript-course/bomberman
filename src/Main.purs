@@ -11,7 +11,7 @@ import Data.Array.ST.Iterator (iterate, iterator)
 import Data.Grid (Grid(..), Coordinates)
 import Data.Grid as Grid
 import Data.List (List)
-import Data.Maybe (Maybe(..), isJust)
+import Data.Maybe (Maybe(..), isJust, maybe)
 import Data.Traversable (for_)
 import Effect (Effect)
 import Effect.Random (randomInt)
@@ -119,18 +119,12 @@ draw { player, board } = do
 handleEvent :: Event -> Reaction World
 handleEvent event = do
   case event of
-    KeyPress { key: "ArrowLeft" } -> do
-      movePlayer { x: -1, y: 0 }
-    KeyPress { key: "ArrowRight" } -> do
-      movePlayer { x: 1, y: 0 }
-    KeyPress { key: "ArrowDown" } -> do
-      movePlayer { x: 0, y: 1 }
-    KeyPress { key: "ArrowUp" } -> do
-      movePlayer { x: 0, y: -1 }
-    KeyPress { key: " " } -> do
-      placeBomb
-    Tick _ -> do
-      updateBombTimes
+    KeyPress { key: "ArrowLeft" } -> movePlayer { x: -1, y: 0 }
+    KeyPress { key: "ArrowRight" } -> movePlayer { x: 1, y: 0 }
+    KeyPress { key: "ArrowDown" } -> movePlayer { x: 0, y: 1 }
+    KeyPress { key: "ArrowUp" } -> movePlayer { x: 0, y: -1 }
+    KeyPress { key: " " } -> placeBomb
+    Tick _ -> advanceTimers
     _ -> executeDefaultBehavior
 
 movePlayer :: { x :: Int, y :: Int } -> Reaction World
@@ -145,32 +139,27 @@ movePlayer { x: xd, y: yd } = do
   where
   isEmpty position board = Grid.index board position == Just Empty
 
-updateBombTimes :: Reaction World
-updateBombTimes = do
-  { player: player, board } <- getW
+advanceTimers :: Reaction World
+advanceTimers = do
+  { player: player, board: Grid tiles dimensions } <- getW
   let
-    b@(Grid tiles _) = updateBoard board
-    activeBombs = Array.length (Array.filter isBomb tiles)
-
-  updateW_ { board: b, player: player { ammo = playerMaxAmmo - activeBombs } }
-
-isBomb :: Tile -> Boolean
-isBomb (Bomb _) = true
-isBomb _ = false
-
--- Only update the timeRemaining field and leave the rest as it was
-
-data Entity = Player
-type Acc = { recoveredAmmo :: List Entity, board' :: Grid Tile }
-
-updateBoard :: Grid Tile -> Grid Tile
-updateBoard (Grid oldTiles dimensions) = Grid newTiles dimensions
+    tiles' = STArray.run do
+      -- Create a mutable copy of the array `tiles`
+      arr <- STArray.thaw tiles
+      -- Create an iterator of numbers 0..(length tiles - 1)
+      iter <- iterator (\i -> map (const i) (tiles !! i))
+      -- Iterate through the indices by calling (tick arr _) on each of them
+      iterate iter $ tick arr
+      -- Return the mutable array, now filled with updated tules
+      pure arr
+    activeBombs = Array.length (Array.filter isBomb tiles')
+  updateW_
+    { board: Grid tiles' dimensions
+    , player: player { ammo = playerMaxAmmo - activeBombs }
+    }
   where
-  newTiles = STArray.run do
-    arr <- STArray.thaw oldTiles
-    iter <- iterator (\i -> if isJust (oldTiles !! i) then Just i else Nothing)
-    iterate iter $ tick arr
-    pure arr
+  isBomb (Bomb _) = true
+  isBomb _ = false
 
 newExplosion :: Tile
 newExplosion = Explosion { timer: explosionLifespan }
@@ -179,43 +168,40 @@ tick :: forall r. STArray r Tile -> Int -> ST r Unit
 tick tiles here = do
   tile <- STArray.peek here tiles
   withJust tile case _ of
+    -- If the timer of a bomb reaches 0, the bomb explodes
     Bomb { timer: 0 } -> explode tiles here
     Bomb { timer } -> placeHere $ Bomb { timer: timer - 1 }
+    -- If the timer of an explosion reaches 0, the explosion disappears
     Explosion { timer: 0 } -> placeHere Empty
     Explosion { timer } -> placeHere $ Explosion { timer: timer - 1 }
     _ -> pure unit
   where
-  placeHere tile = place tiles here tile
+  placeHere = place tiles here
 
 explode :: forall r. STArray r Tile -> Int -> ST r Unit
-explode tiles i = do
-  place tiles i newExplosion
+explode tiles origin = do
+  place tiles origin newExplosion
+  -- Akin to a for-each loop in OOP langugaes
+  -- ...only here for_ is just a normal function that you could implement yourself
   for_ [ { x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 } ] \dir ->
-    propagateExplosion tiles i explosionRadius dir
+    shockwave dir origin explosionRadius
+  where
+  to1D { x, y } = y * width + x
+  to2D i = { x: i `mod` width, y: i / width }
 
-propagateExplosion :: forall r. STArray r Tile -> Int -> Int -> Coordinates -> ST r Unit
-propagateExplosion tiles i power d
-  | power == 0 = pure unit
-  | otherwise =
-      do
-        next <- STArray.peek there tiles
-        withJust next case _ of
-          Wall -> pure unit
-          Crate -> engulf
-          (Bomb _) -> explode tiles there
-          _ -> do
-            engulf
-            propagateExplosion tiles there (power - 1) d
-      where
-      here = to2D i
-      there = to1D $ { x: here.x + d.x, y: here.y + d.y }
-      engulf = place tiles there $ Explosion { timer: explosionLifespan }
-
-to1D :: Coordinates -> Int
-to1D { x, y } = y * width + x
-
-to2D :: Int -> Coordinates
-to2D i = { x: i `mod` width, y: i / width }
+  shockwave :: Coordinates -> Int -> Int -> ST r Unit
+  shockwave _ _ 0 = pure unit
+  shockwave dir here power = do
+    next <- STArray.peek there tiles
+    withJust next case _ of
+      Wall -> pure unit
+      Crate -> engulf
+      Bomb _ -> explode tiles there
+      _ -> engulf *> shockwave dir there (power - 1)
+    where
+    here' = to2D here
+    there = to1D $ { x: here'.x + dir.x, y: here'.y + dir.y }
+    engulf = place tiles there newExplosion
 
 place :: forall r a. STArray r a -> Int -> a -> ST r Unit
 place tiles i element =
