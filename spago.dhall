@@ -13,8 +13,6 @@ to generate this file without the comments in this block.
 { name = "my-project"
 , dependencies =
   [ "arrays"
-  , "console"
-  , "debug"
   , "effect"
   , "foldable-traversable"
   , "grid-reactors"
@@ -23,6 +21,7 @@ to generate this file without the comments in this block.
   , "prelude"
   , "psci-support"
   , "random"
+  , "st"
   ]
 , packages = ./packages.dhall
 , sources = [ "src/**/*.purs", "test/**/*.purs" ]
