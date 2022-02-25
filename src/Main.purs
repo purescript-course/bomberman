@@ -1,4 +1,31 @@
-module Main where
+module Main
+  ( Bomb
+  , Bomberman
+  , Enemy
+  , BombermanId
+  , Tile(..)
+  , World
+  , advanceTimers
+  , bombLifespan
+  , createInitialWorld
+  , createReactor
+  , draw
+  , evenWallPlacement
+  , explode
+  , explosionLifespan
+  , explosionRadius
+  , handleEvent
+  , height
+  , isWall
+  , main
+  , move
+  , place
+  , placeBomb
+  , playerMaxAmmo
+  , shouldPlaceCrate
+  , tick
+  , width
+  ) where
 
 import Prelude
 
@@ -8,24 +35,31 @@ import Data.Array as Array
 import Data.Array.ST (STArray)
 import Data.Array.ST as STArray
 import Data.Array.ST.Iterator (iterate, iterator)
+import Data.Function (on)
 import Data.Grid (Grid(..), Coordinates)
 import Data.Grid as Grid
-import Data.List (List)
-import Data.Maybe (Maybe(..), isJust, maybe)
-import Data.Traversable (for_)
+import Data.List (List, all)
+import Data.Maybe (Maybe(..), fromMaybe, isJust, maybe)
+import Data.Traversable (for, for_)
+import Data.Tuple.Nested ((/\))
 import Effect (Effect)
+import Effect.Class (liftEffect)
+import Effect.Class.Console (log)
 import Effect.Random (randomInt)
-import Reactor (Reactor, executeDefaultBehavior, getW, runReactor, updateW_, withJust)
+import Reactor (Reactor, Widget(..), executeDefaultBehavior, getW, modifyW_, runReactor, updateW, updateW_, withJust)
 import Reactor.Events (Event(..))
 import Reactor.Graphics.Colors as Color
 import Reactor.Graphics.Drawing (Drawing, drawGrid, fill, tile)
-import Reactor.Reaction (Reaction)
+import Reactor.Reaction (Reaction, ReactionM, widget)
 
 width :: Int
 width = 12
 
 height :: Int
 height = 12
+
+playerMaxHp :: Int
+playerMaxHp = 100
 
 bombLifespan :: Int
 bombLifespan = 3 * 60
@@ -39,10 +73,23 @@ explosionRadius = 4
 playerMaxAmmo :: Int
 playerMaxAmmo = 2
 
+initialPlayerLocation :: Coordinates
+initialPlayerLocation = { x: width / 2, y: height / 2 }
+
 main :: Effect Unit
 main = do
   reactor <- createReactor
-  runReactor reactor { title: "Bomberman", width, height, widgets: [] }
+  runReactor reactor
+    { title: "Bomberman"
+    , width
+    , height
+    , widgets:
+        [ "section_hp" /\ Section { title: "Health" }
+        , "label_hp" /\ Label { content: show $ playerMaxHp }
+        , "section_score" /\ Section { title: "Score" }
+        , "label_score" /\ Label { content: show 0 }
+        ]
+    }
 
 data Tile
   = Wall
@@ -53,11 +100,24 @@ data Tile
 
 derive instance tileEq :: Eq Tile
 
-type Bomb = { timeRemaining :: Int, location :: Coordinates }
+data BombermanId = Player | Enemy Int
+
+type Bomberman = { location :: Coordinates, ammo :: Int, hp :: Int }
+
+type Enemy =
+  { location :: Coordinates
+  , ammo :: Int
+  , lastDirection :: Maybe Coordinates
+  , alive :: Boolean
+  }
+
+type Bomb = { timeRemaining :: Int, location :: Coordinates, placedBy :: BombermanId }
 
 type World =
-  { player :: { location :: Coordinates, ammo :: Int }
+  { player :: Bomberman
+  , enemies :: Array Enemy
   , board :: Grid Tile
+  , time :: Int
   }
 
 createReactor :: Effect (Reactor World)
@@ -71,12 +131,21 @@ shouldPlaceCrate = (_ == 1) <$> (randomInt 1 3)
 createInitialWorld :: Effect World
 createInitialWorld = do
   board <- Grid.constructM width height constructor
-  pure { player, board }
+  pure { player, enemies, board, time: 1 }
   where
   player =
-    { location: { x: width / 2, y: height / 2 }
+    { location: initialPlayerLocation
     , ammo: playerMaxAmmo
+    , hp: playerMaxHp
     }
+  enemies = map createEnemy
+    [ { x: width / 3, y: 2 * height / 3 }
+    , { x: width / 3, y: 2 * height / 3 }
+    , { x: width / 3, y: 2 * height / 3 }
+    , { x: width / 3, y: 2 * height / 3 }
+    ]
+  createEnemy location =
+    { location, ammo: playerMaxAmmo, lastDirection: Nothing, alive: true }
   constructor point
     | isWall point = pure Wall
     | otherwise = do
@@ -100,10 +169,13 @@ evenWallPlacement true currentIndex = currentIndex `mod` 2 == 0
 evenWallPlacement _ currentIndex = (currentIndex - 1) `mod` 2 == 0
 
 draw :: World -> Drawing
-draw { player, board } = do
+draw { player, board, enemies } = do
   drawGrid board drawTile
   withJust (Grid.index board player.location) \t ->
     fill (playerColorAt t) $ tile player.location
+  for_ (Array.filter (_.alive) enemies) \{ location } ->
+    fill (Color.pink400) $ tile location
+
   where
   drawTile Empty = Just Color.gray300
   drawTile Wall = Just Color.gray700
@@ -124,24 +196,60 @@ handleEvent event = do
     KeyPress { key: "ArrowDown" } -> movePlayer { x: 0, y: 1 }
     KeyPress { key: "ArrowUp" } -> movePlayer { x: 0, y: -1 }
     KeyPress { key: " " } -> placeBomb
-    Tick _ -> advanceTimers
+    Tick _ -> do
+      maybeHurtPlayer
+      maybeHurtEnemies
+      advanceTimers
     _ -> executeDefaultBehavior
-
-movePlayer :: { x :: Int, y :: Int } -> Reaction World
-movePlayer { x: xd, y: yd } = do
-  -- Match the patter {x, y} on player's location
-  -- And also store the whole player in a variable by using player: player@(...)
-  { player: player@({ location: { x, y } }), board } <- getW
-  let newPlayerPosition = { x: x + xd, y: y + yd }
-  when (isEmpty newPlayerPosition board) $
-    -- Update location in player by using: player { location = ... }
-    updateW_ { player: player { location = newPlayerPosition } }
   where
-  isEmpty position board = Grid.index board position == Just Empty
+  movePlayer dir = do
+    { player: p@{ location }, board, enemies } <- getW
+    let bombermenLocations = Array.cons p.location (map (_.location) enemies)
+    case move board bombermenLocations location dir of
+      Just newLocation -> updateW_ { player: p { location = newLocation } }
+      Nothing -> pure unit
+
+move :: Grid Tile -> Array Coordinates -> Coordinates -> Coordinates -> Maybe Coordinates
+move board bombermen { x, y } { x: xd, y: yd } =
+  if hasSpace && notOccupied then Just newLocation else Nothing
+
+  where
+  newLocation = { x: x + xd, y: y + yd }
+  hasSpace = Grid.index board newLocation == Just Empty
+  notOccupied = all (\loc -> loc /= newLocation) bombermen
+
+maybeHurtPlayer :: Reaction World
+maybeHurtPlayer = do
+  { player, board } <- getW
+  case Grid.index board player.location of
+    Just (Explosion _) -> do
+      let nextHp = player.hp - 1
+      if nextHp <= 0 then restartGame else updateW_ { player: player { hp = nextHp } }
+    _ -> pure unit
+  widget "label_hp" $ Label { content: show player.hp }
+
+maybeHurtEnemies :: Reaction World
+maybeHurtEnemies = do
+  { board, enemies } <- getW
+  let
+    hurtEnemy enemy =
+      case Grid.index board enemy.location of
+        Just (Explosion _) -> enemy { alive = false }
+        _ -> enemy
+  updateW_ { enemies: map hurtEnemy enemies }
+  log $ show $ Array.filter (not <<< _.alive) enemies
+  widget "label_score" $
+    Label { content: show $ Array.length $ Array.filter (not <<< _.alive) enemies }
+
+restartGame :: Reaction World
+restartGame = do
+  newWorld <- liftEffect createInitialWorld
+  modifyW_ $ const newWorld
 
 advanceTimers :: Reaction World
 advanceTimers = do
-  { player: player, board: Grid tiles dimensions } <- getW
+  { player, board: Grid tiles dimensions, time } <- getW
+  updateW_ { time: time + 1 }
   let
     tiles' = STArray.run do
       -- Create a mutable copy of the array `tiles`
@@ -153,13 +261,48 @@ advanceTimers = do
       -- Return the mutable array, now filled with updated tules
       pure arr
     activeBombs = Array.length (Array.filter isBomb tiles')
+  when (time `mod` 15 == 0) do
+    updateW_ { time: time + 1 }
+    moveEnemies
   updateW_
     { board: Grid tiles' dimensions
     , player: player { ammo = playerMaxAmmo - activeBombs }
     }
+
   where
   isBomb (Bomb _) = true
   isBomb _ = false
+
+moveEnemies :: Reaction World
+moveEnemies = do
+  { board, player, enemies } <- getW
+  movedEnemies <- liftEffect $ for enemies \e -> do
+    shouldMove <- (_ < 8) <$> randomInt 0 10
+    let bombermenLocations = Array.cons player.location (map (_.location) enemies)
+    maybeDirection <- choice
+      $ Array.filter (isJust <<< move board bombermenLocations e.location)
+      $ Array.filter (\d -> (opposite d <$> e.lastDirection) /= Just true) directions
+    pure $
+      if shouldMove then fromMaybe (e { lastDirection = Nothing }) do
+        dir <- maybeDirection
+        loc <- move board bombermenLocations e.location dir
+        pure $ e { location = loc, lastDirection = Just $ dir }
+      else e
+  updateW_ { enemies: movedEnemies }
+
+  where
+  directions = [ { x: -1, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 } ]
+
+opposite :: Coordinates -> Coordinates -> Boolean
+opposite { x: -1, y: 0 } { x: 1, y: 0 } = true
+opposite { x: 1, y: 0 } { x: -1, y: 0 } = true
+opposite { x: 0, y: 1 } { x: 0, y: -1 } = true
+opposite { x: 0, y: -1 } { x: 0, y: 1 } = true
+opposite _ _ = false
+
+choice :: forall a. Array a -> Effect (Maybe a)
+choice [] = pure Nothing
+choice xs = (xs !! _) <$> randomInt 0 (Array.length xs - 1)
 
 newExplosion :: Tile
 newExplosion = Explosion { timer: explosionLifespan }
